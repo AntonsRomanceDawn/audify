@@ -22,7 +22,9 @@ impl ArticleExtractor {
         Self { client }
     }
 
-    async fn fetch(&self, url: &str) -> Result<String> {
+    /// Fetch a URL and extract it — routing PDFs to the PDF extractor and
+    /// everything else through HTML parsing, based on content-type / extension.
+    async fn extract_url(&self, url: &str) -> Result<Document> {
         let resp = self
             .client
             .get(url)
@@ -31,8 +33,41 @@ impl ArticleExtractor {
             .map_err(|e| Error::Http(e.to_string()))?
             .error_for_status()
             .map_err(|e| Error::Extraction(format!("fetching {url}: {e}")))?;
-        resp.text().await.map_err(|e| Error::Http(e.to_string()))
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+
+        if content_type.contains("application/pdf") || path.ends_with(".pdf") {
+            let title = pdf_title_from_url(url);
+            let bytes = resp.bytes().await.map_err(|e| Error::Http(e.to_string()))?;
+            super::pdf::extract_from_bytes(bytes.to_vec(), title).await
+        } else {
+            let body = resp.text().await.map_err(|e| Error::Http(e.to_string()))?;
+            // No `await` past this point, so the non-Send `Html` value is never
+            // held across a suspension and the future stays `Send`.
+            parse_html(&body)
+        }
     }
+}
+
+/// Derive a readable title from a PDF URL's filename.
+fn pdf_title_from_url(url: &str) -> Option<String> {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .rsplit('/')
+        .next()
+        .map(|f| {
+            f.trim_end_matches(".pdf")
+                .trim_end_matches(".PDF")
+                .replace(['_', '-'], " ")
+        })
+        .filter(|t| !t.trim().is_empty())
 }
 
 #[async_trait]
@@ -45,12 +80,7 @@ impl Extractor for ArticleExtractor {
                 }
                 Ok(text_document(text))
             }
-            Source::Url(url) => {
-                let body = self.fetch(url).await?;
-                // No `await` past this point, so the non-Send `Html` value is
-                // never held across a suspension and the future stays `Send`.
-                parse_html(&body)
-            }
+            Source::Url(url) => self.extract_url(url).await,
             Source::File(_) => Err(Error::InvalidSource(
                 "ArticleExtractor does not handle files".into(),
             )),

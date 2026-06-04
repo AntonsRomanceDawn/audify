@@ -150,7 +150,7 @@ async function add() {
   msg.textContent = 'Submitting…';
   try {
     const r = await fetch('/api/articles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!r.ok) { msg.textContent = 'Error: ' + r.status; return; }
+    if (!r.ok) { const t = await r.json().catch(() => ({})); msg.textContent = 'Error: ' + (t.error || r.status); return; }
     const j = await r.json();
     msg.textContent = 'Queued ' + j.episode_id.slice(0, 8) + ' — rendering…';
     document.getElementById('src').value = '';
@@ -280,6 +280,8 @@ async fn create_article(
         _ => return Err(ApiError::BadRequest("provide 'url' or 'text'".into())),
     };
     let extractor = RoutingExtractor::new(state.http.clone());
+    // Submission failures are almost always content issues (bad URL, no
+    // extractable text) — surface the reason to the caller, not an opaque 500.
     let r = service::submit(
         &source,
         &extractor,
@@ -288,7 +290,8 @@ async fn create_article(
         &state.queue,
         &state.voice_id,
     )
-    .await?;
+    .await
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(SubmitDto {

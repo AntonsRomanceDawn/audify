@@ -37,23 +37,31 @@ impl Extractor for PdfExtractor {
             .map(|s| s.to_string_lossy().replace(['_', '-'], " "))
             .filter(|t| !t.trim().is_empty());
 
-        // pdf-extract is blocking/CPU-bound; keep it off the async runtime.
-        // Map the error to a String inside the closure so it crosses threads.
-        let raw = tokio::task::spawn_blocking(move || {
-            pdf_extract::extract_text(&path).map_err(|e| format!("{e:?}"))
-        })
-        .await
-        .map_err(|e| Error::Extraction(format!("pdf task panicked: {e}")))?
-        .map_err(Error::Extraction)?;
-
-        let document = clean_pdf_text(&raw, title);
-        if document.is_empty() {
-            return Err(Error::Extraction(
-                "no usable text extracted from PDF (scanned or image-only?)".into(),
-            ));
-        }
-        Ok(document)
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|e| Error::Extraction(format!("reading {}: {e}", path.display())))?;
+        extract_from_bytes(bytes, title).await
     }
+}
+
+/// Extract a cleaned document from raw PDF bytes (file or downloaded URL).
+pub(crate) async fn extract_from_bytes(bytes: Vec<u8>, title: Option<String>) -> Result<Document> {
+    // pdf-extract is blocking/CPU-bound; keep it off the async runtime, and map
+    // the error to a String inside the closure so it crosses threads.
+    let raw = tokio::task::spawn_blocking(move || {
+        pdf_extract::extract_text_from_mem(&bytes).map_err(|e| format!("{e:?}"))
+    })
+    .await
+    .map_err(|e| Error::Extraction(format!("pdf task panicked: {e}")))?
+    .map_err(Error::Extraction)?;
+
+    let document = clean_pdf_text(&raw, title);
+    if document.is_empty() {
+        return Err(Error::Extraction(
+            "no usable text extracted from PDF (scanned or image-only?)".into(),
+        ));
+    }
+    Ok(document)
 }
 
 /// A line that is just a page number, e.g. "12" or "Page 3".
