@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 audify-core = { workspace = true }
 audify-pipeline = { workspace = true }
+audify-db = { workspace = true }
 
 tokio = { workspace = true }
 reqwest = { workspace = true }

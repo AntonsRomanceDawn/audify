@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/pipeline", "crates/app"]
+members = ["crates/core", "crates/pipeline", "crates/db", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MIT"
 # Internal crates
 audify-core = { path = "crates/core" }
 audify-pipeline = { path = "crates/pipeline" }
+audify-db = { path = "crates/db" }
 
 # Async runtime + traits
 tokio = { version = "1", features = ["full"] }
@@ -36,6 +37,11 @@ regex = "1"
 # Hashing / encoding
 sha2 = "0.10"
 base64 = "0.22"
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

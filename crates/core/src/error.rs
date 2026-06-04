@@ -25,6 +25,10 @@ pub enum Error {
     #[error("storage error: {0}")]
     Storage(String),
 
+    /// A database operation failed.
+    #[error("database error: {0}")]
+    Database(String),
+
     /// An outbound HTTP call failed at the transport level.
     #[error("http error: {0}")]
     Http(String),

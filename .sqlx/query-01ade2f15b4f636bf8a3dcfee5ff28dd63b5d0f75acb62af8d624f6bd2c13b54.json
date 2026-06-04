@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO episodes (document_id, status, voice_id, char_count, est_cost_usd)\n            VALUES ($1, $2, $3, $4, $5)\n            RETURNING\n                id AS \"id!\",\n                document_id AS \"document_id!\",\n                status AS \"status!\",\n                voice_id AS \"voice_id!\",\n                char_count AS \"char_count!\",\n                duration_sec,\n                audio_path,\n                est_cost_usd AS \"est_cost_usd!\",\n                created_at AS \"created_at!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "voice_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "char_count!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "duration_sec",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "audio_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "est_cost_usd!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "01ade2f15b4f636bf8a3dcfee5ff28dd63b5d0f75acb62af8d624f6bd2c13b54"
+}

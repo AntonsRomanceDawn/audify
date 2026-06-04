@@ -41,6 +41,8 @@ enum Command {
     },
     /// List the preset voice ids available to your account.
     Voices,
+    /// Apply database migrations.
+    Migrate,
 }
 
 #[tokio::main]
@@ -50,16 +52,34 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let config = Config::load().context("loading configuration")?;
-    let http = reqwest::Client::builder()
+
+    match cli.command {
+        Command::Migrate => run_migrate(&config).await,
+        Command::Voices => run_voices(&config, http_client(&config)?).await,
+        Command::Convert { url, text, out } => {
+            run_convert(&config, http_client(&config)?, url, text, out).await
+        }
+    }
+}
+
+/// Build the outbound HTTP client used for fetching and synthesis.
+fn http_client(config: &Config) -> anyhow::Result<reqwest::Client> {
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(config.http_timeout_secs))
         .user_agent(concat!("audify/", env!("CARGO_PKG_VERSION")))
         .build()
-        .context("building HTTP client")?;
+        .context("building HTTP client")
+}
 
-    match cli.command {
-        Command::Voices => run_voices(&config, http).await,
-        Command::Convert { url, text, out } => run_convert(&config, http, url, text, out).await,
-    }
+async fn run_migrate(config: &Config) -> anyhow::Result<()> {
+    let database_url = config.require_database_url()?;
+    let pool = audify_db::connect(database_url)
+        .await
+        .context("connecting to database")?;
+    audify_db::migrate(&pool).await.context("applying migrations")?;
+    tracing::info!("migrations applied");
+    println!("Migrations applied.");
+    Ok(())
 }
 
 async fn run_voices(config: &Config, http: reqwest::Client) -> anyhow::Result<()> {

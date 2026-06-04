@@ -100,3 +100,70 @@ pub struct Audio {
     pub bytes: Vec<u8>,
     pub format: AudioFormat,
 }
+
+/// High-level lifecycle of an episode, as shown to clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EpisodeStatus {
+    Pending,
+    Processing,
+    Ready,
+    Failed,
+}
+
+/// Fine-grained state of a processing job, persisted and logged at each step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    Pending,
+    Extracting,
+    Normalizing,
+    Segmenting,
+    Synthesizing,
+    Assembling,
+    Ready,
+    Failed,
+}
+
+macro_rules! str_enum {
+    ($ty:ty { $($variant:ident => $s:literal),+ $(,)? }) => {
+        impl $ty {
+            /// The stable string stored in the database.
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(<$ty>::$variant => $s,)+
+                }
+            }
+        }
+
+        impl std::str::FromStr for $ty {
+            type Err = crate::Error;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($s => Ok(<$ty>::$variant),)+
+                    other => Err(crate::Error::Database(format!(
+                        concat!("invalid ", stringify!($ty), ": {}"), other
+                    ))),
+                }
+            }
+        }
+    };
+}
+
+str_enum!(EpisodeStatus {
+    Pending => "pending",
+    Processing => "processing",
+    Ready => "ready",
+    Failed => "failed",
+});
+
+str_enum!(JobState {
+    Pending => "pending",
+    Extracting => "extracting",
+    Normalizing => "normalizing",
+    Segmenting => "segmenting",
+    Synthesizing => "synthesizing",
+    Assembling => "assembling",
+    Ready => "ready",
+    Failed => "failed",
+});

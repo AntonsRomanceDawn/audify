@@ -1,0 +1,28 @@
+# Local development database.
+#
+# `docker compose up -d`        start Postgres
+# `docker compose down`         stop (keeps data)
+# `docker compose down -v`      stop and delete all data
+#
+# Production (api, worker, caddy) is added in Phase 4. Set the image tag to match
+# your VPS's Postgres major version so dev mirrors prod.
+services:
+  postgres:
+    image: postgres:16
+    container_name: audify-postgres
+    environment:
+      POSTGRES_USER: audify
+      POSTGRES_PASSWORD: audify
+      POSTGRES_DB: audify
+    ports:
+      - "5432:5432"
+    volumes:
+      - audify-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audify -d audify"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  audify-pgdata:

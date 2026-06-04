@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, document_id, status, voice_id, char_count, duration_sec,\n                   audio_path, est_cost_usd, created_at\n            FROM episodes WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "voice_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "char_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "duration_sec",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "audio_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "est_cost_usd",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "2dfe54b3de44ccdb53fa8d16696422bc76d3ea5e26d94490c8c9280a520686bf"
+}

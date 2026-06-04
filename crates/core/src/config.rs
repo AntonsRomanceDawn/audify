@@ -37,6 +37,11 @@ pub struct Config {
     /// Timeout for outbound HTTP calls, in seconds.
     #[serde(default = "defaults::http_timeout_secs")]
     pub http_timeout_secs: u64,
+
+    /// Postgres connection string, read from `DATABASE_URL` (set in `load`).
+    /// Optional so non-DB commands work without it.
+    #[serde(skip)]
+    pub database_url: Option<String>,
 }
 
 mod defaults {
@@ -63,12 +68,16 @@ impl Config {
     /// Returns [`Error::Config`] if anything is missing or invalid, so callers
     /// can fail fast at startup.
     pub fn load() -> Result<Self> {
-        let cfg: Config = config::Config::builder()
+        let mut cfg: Config = config::Config::builder()
             .add_source(config::Environment::with_prefix("AUDIFY"))
             .build()
             .map_err(|e| Error::Config(e.to_string()))?
             .try_deserialize()
             .map_err(|e| Error::Config(e.to_string()))?;
+
+        // The DB uses the conventional DATABASE_URL name (which sqlx also reads
+        // at build time), not the AUDIFY_ prefix — one variable for build + runtime.
+        cfg.database_url = std::env::var("DATABASE_URL").ok();
 
         cfg.validate()?;
         Ok(cfg)
@@ -77,6 +86,16 @@ impl Config {
     /// The parsed, validated audio format.
     pub fn audio_format(&self) -> Result<AudioFormat> {
         self.response_format.parse()
+    }
+
+    /// The configured database URL, or a helpful error if none is set.
+    pub fn require_database_url(&self) -> Result<&str> {
+        match self.database_url.as_deref().map(str::trim) {
+            Some(v) if !v.is_empty() => Ok(v),
+            _ => Err(Error::Config(
+                "DATABASE_URL is not set (e.g. postgres://audify:audify@localhost:5432/audify)".into(),
+            )),
+        }
     }
 
     /// The configured voice id, or a helpful error if none is set yet.

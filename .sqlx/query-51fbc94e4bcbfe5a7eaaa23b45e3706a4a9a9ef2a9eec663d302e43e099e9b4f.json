@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO documents (source_type, source_ref, content_hash, title, struct_json)\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (content_hash) DO UPDATE SET title = EXCLUDED.title\n            RETURNING\n                id AS \"id!\",\n                source_type AS \"source_type!\",\n                source_ref AS \"source_ref!\",\n                content_hash AS \"content_hash!\",\n                title,\n                struct_json AS \"struct_json!: serde_json::Value\",\n                created_at AS \"created_at!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "source_type!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "source_ref!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "content_hash!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "struct_json!: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "51fbc94e4bcbfe5a7eaaa23b45e3706a4a9a9ef2a9eec663d302e43e099e9b4f"
+}

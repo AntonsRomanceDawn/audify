@@ -12,4 +12,6 @@ pub mod types;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use traits::{Extractor, Normalizer, Storage, Synthesizer};
-pub use types::{Audio, AudioFormat, Document, Section, Source};
+pub use types::{
+    Audio, AudioFormat, Document, EpisodeStatus, JobState, Section, Source,
+};

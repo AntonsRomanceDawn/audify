@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE episodes SET status = $2, audio_path = $3, duration_sec = $4 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f61c3344782c16648b91cc16d5b1a69288fe45fedc498eca8d666eab9b99dcc9"
+}
