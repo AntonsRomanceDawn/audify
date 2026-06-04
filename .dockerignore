@@ -1,0 +1,12 @@
+target
+.git
+.github
+output
+data
+*.mp3
+*.wav
+*.pcm
+.env
+.env.*
+!.env.prod.example
+# Keep .sqlx — required for the offline build.

@@ -157,6 +157,7 @@ dependencies = [
  "audify-db",
  "audify-pipeline",
  "axum",
+ "base64",
  "clap",
  "dotenvy",
  "reqwest",

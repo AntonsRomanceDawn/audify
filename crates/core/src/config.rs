@@ -41,6 +41,12 @@ pub struct Config {
     #[serde(default = "defaults::public_base_url")]
     pub public_base_url: String,
 
+    /// HTTP Basic Auth for the feed/stream. If either is unset, auth is disabled.
+    #[serde(default)]
+    pub basic_auth_user: Option<String>,
+    #[serde(default)]
+    pub basic_auth_pass: Option<String>,
+
     /// Postgres connection string, read from `DATABASE_URL` (set in `load`).
     /// Optional so non-DB commands work without it.
     #[serde(skip)]

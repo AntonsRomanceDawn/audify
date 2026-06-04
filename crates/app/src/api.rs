@@ -8,10 +8,12 @@ use anyhow::Context;
 use axum::{
     extract::{Path, Query, Request, State},
     http::{header, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tower::{ServiceBuilder, ServiceExt};
 use tower_http::{
@@ -39,6 +41,8 @@ struct AppState {
     voice_id: String,
     output_dir: String,
     public_base_url: String,
+    /// (user, pass) for Basic Auth on feed/stream; `None` disables auth.
+    basic_auth: Option<(String, String)>,
 }
 
 /// Build the server from config and serve until shutdown.
@@ -57,6 +61,13 @@ pub async fn serve(config: &Config, http: reqwest::Client) -> anyhow::Result<()>
         voice_id,
         output_dir: config.output_dir.clone(),
         public_base_url: config.public_base_url.trim_end_matches('/').to_string(),
+        basic_auth: match (&config.basic_auth_user, &config.basic_auth_pass) {
+            (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+            _ => {
+                tracing::warn!("basic auth disabled (AUDIFY_BASIC_AUTH_USER/PASS not set)");
+                None
+            }
+        },
     };
 
     let app = router(state);
@@ -76,6 +87,8 @@ fn router(state: AppState) -> Router {
         .route("/api/episodes", get(list_episodes))
         .route("/api/episodes/{id}", get(get_episode))
         .route("/api/episodes/{id}/stream", get(stream_episode))
+        // Runs for all routes; enforces Basic Auth only on the podcast-facing ones.
+        .route_layer(middleware::from_fn_with_state(state.clone(), basic_auth))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -92,6 +105,34 @@ fn router(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Enforce HTTP Basic Auth on podcast-facing routes when credentials are set.
+async fn basic_auth(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let path = request.uri().path();
+    let is_protected =
+        path == "/feed.xml" || (path.starts_with("/api/episodes/") && path.ends_with("/stream"));
+
+    if is_protected {
+        if let Some((user, pass)) = &state.basic_auth {
+            let presented = request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.strip_prefix("Basic "))
+                .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let expected = format!("{user}:{pass}");
+            if presented.as_deref() != Some(expected.as_str()) {
+                return Err(ApiError::Unauthorized);
+            }
+        }
+    }
+    Ok(next.run(request).await)
 }
 
 // ---- episodes ----
@@ -277,14 +318,24 @@ impl EpisodeDto {
 enum ApiError {
     NotFound,
     BadRequest(String),
+    Unauthorized,
     Internal(anyhow::Error),
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if let ApiError::Unauthorized = self {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Basic realm=\"audify\"")],
+                Json(serde_json::json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        }
         let (status, message) = match self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::Unauthorized => unreachable!("handled above"),
             ApiError::Internal(e) => {
                 tracing::error!(error = %e, "request failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())

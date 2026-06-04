@@ -1,0 +1,71 @@
+# Production stack for the VPS: dedicated Postgres + one-shot migrate + api + worker.
+# No reverse proxy here — the existing nginx fronts the api on 127.0.0.1:8091.
+#
+# With a .env file present (see .env.prod.example), build + start on the server:
+#   docker compose -f docker-compose.prod.yml up -d --build
+# (api builds the audify:latest image; worker/migrate reuse it.)
+services:
+  postgres:
+    image: postgres:16
+    container_name: audify-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: audify
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: audify
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audify -d audify"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: audify:latest
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://audify:${POSTGRES_PASSWORD}@postgres:5432/audify
+
+  api:
+    image: audify:latest
+    build: .
+    command: ["serve"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://audify:${POSTGRES_PASSWORD}@postgres:5432/audify
+      AUDIFY_MISTRAL_API_KEY: ${AUDIFY_MISTRAL_API_KEY}
+      AUDIFY_VOICE_ID: ${AUDIFY_VOICE_ID}
+      AUDIFY_BIND_ADDR: 0.0.0.0:8080
+      AUDIFY_PUBLIC_BASE_URL: https://audify.antonslab.eu
+      AUDIFY_BASIC_AUTH_USER: ${AUDIFY_BASIC_AUTH_USER}
+      AUDIFY_BASIC_AUTH_PASS: ${AUDIFY_BASIC_AUTH_PASS}
+    volumes:
+      - audio:/data/output
+    ports:
+      - "127.0.0.1:8091:8080"
+
+  worker:
+    image: audify:latest
+    command: ["worker"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://audify:${POSTGRES_PASSWORD}@postgres:5432/audify
+      AUDIFY_MISTRAL_API_KEY: ${AUDIFY_MISTRAL_API_KEY}
+      AUDIFY_VOICE_ID: ${AUDIFY_VOICE_ID}
+    volumes:
+      - audio:/data/output
+
+volumes:
+  pgdata:
+  audio:
