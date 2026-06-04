@@ -1,9 +1,9 @@
-# Production stack for the VPS: dedicated Postgres + one-shot migrate + api + worker.
-# No reverse proxy here — the existing nginx fronts the api on 127.0.0.1:8091.
+# Production stack for the VPS. Images are built in CI and pushed to GHCR;
+# the VPS pulls them (no building here). Values come from a .env file in this
+# same directory (see .env.prod.example).
 #
-# With a .env file present (see .env.prod.example), build + start on the server:
-#   docker compose -f docker-compose.prod.yml up -d --build
-# (api builds the audify:latest image; worker/migrate reuse it.)
+# The host's existing nginx forwards audify.antonslab.eu -> 127.0.0.1:8091.
+# Deploy is automated by .github/workflows/deploy.yml on push to master.
 services:
   postgres:
     image: postgres:16
@@ -22,7 +22,7 @@ services:
       retries: 10
 
   migrate:
-    image: audify:latest
+    image: ghcr.io/${IMAGE_OWNER}/audify:latest
     command: ["migrate"]
     restart: "no"
     depends_on:
@@ -32,8 +32,7 @@ services:
       DATABASE_URL: postgres://audify:${POSTGRES_PASSWORD}@postgres:5432/audify
 
   api:
-    image: audify:latest
-    build: .
+    image: ghcr.io/${IMAGE_OWNER}/audify:latest
     command: ["serve"]
     restart: unless-stopped
     depends_on:
@@ -53,7 +52,7 @@ services:
       - "127.0.0.1:8091:8080"
 
   worker:
-    image: audify:latest
+    image: ghcr.io/${IMAGE_OWNER}/audify:latest
     command: ["worker"]
     restart: unless-stopped
     depends_on:
