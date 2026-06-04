@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE processing_jobs\n            SET state = $2,\n                locked_until = now() + make_interval(secs => $1),\n                attempts = attempts + 1,\n                updated_at = now()\n            WHERE id = (\n                SELECT id FROM processing_jobs\n                WHERE state = 'pending'\n                   OR (state NOT IN ('ready', 'failed')\n                       AND locked_until IS NOT NULL AND locked_until < now())\n                ORDER BY created_at\n                FOR UPDATE SKIP LOCKED\n                LIMIT 1\n            )\n            RETURNING id AS \"job_id!\", episode_id AS \"episode_id!\", attempts AS \"attempts!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "episode_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempts!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a52eaafb2b1864d1051a0b974842a75141c2eac22548130145d8b09a6cca5ccf"
+}

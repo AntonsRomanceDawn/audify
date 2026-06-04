@@ -4,6 +4,9 @@
 //! writes an audio file. `audify voices` lists the preset voice ids your account
 //! can use (and confirms the API key + endpoint work).
 
+mod worker;
+
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
@@ -11,9 +14,9 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use tracing_subscriber::EnvFilter;
 
-use audify_core::{Config, Source};
+use audify_core::{Config, Extractor, Queue, Source};
 use audify_pipeline::{
-    extract::ArticleExtractor, normalize::RuleNormalizer, process, storage::LocalStorage,
+    extract::RoutingExtractor, normalize::RuleNormalizer, process, storage::LocalStorage,
     synth::VoxtralSynthesizer,
 };
 
@@ -27,17 +30,38 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Convert an article (URL or raw text) into an audio file.
+    /// Convert an article (URL, raw text, or PDF file) into an audio file.
     Convert {
         /// URL of an article to fetch and convert.
-        #[arg(long, conflicts_with = "text")]
+        #[arg(long, conflicts_with_all = ["text", "file"])]
         url: Option<String>,
         /// Raw text to convert directly.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "file")]
         text: Option<String>,
+        /// Path to a local PDF file.
+        #[arg(long)]
+        file: Option<String>,
         /// Output file name (without extension). Defaults to a hash of the source.
         #[arg(long)]
         out: Option<String>,
+        /// Print the speakable text and exit without synthesizing (free; no API call).
+        #[arg(long)]
+        preview: bool,
+    },
+    /// Submit a source for async processing: persists it and enqueues a job.
+    Submit {
+        #[arg(long, conflicts_with_all = ["text", "file"])]
+        url: Option<String>,
+        #[arg(long, conflicts_with = "file")]
+        text: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Run the background worker: drain the queue and render episodes.
+    Worker {
+        /// Process at most one job (or none) and exit, instead of looping.
+        #[arg(long)]
+        once: bool,
     },
     /// List the preset voice ids available to your account.
     Voices,
@@ -55,10 +79,18 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Migrate => run_migrate(&config).await,
-        Command::Voices => run_voices(&config, http_client(&config)?).await,
-        Command::Convert { url, text, out } => {
-            run_convert(&config, http_client(&config)?, url, text, out).await
+        Command::Submit { url, text, file } => {
+            run_submit(&config, http_client(&config)?, url, text, file).await
         }
+        Command::Worker { once } => worker::run(&config, http_client(&config)?, once).await,
+        Command::Voices => run_voices(&config, http_client(&config)?).await,
+        Command::Convert {
+            url,
+            text,
+            file,
+            out,
+            preview,
+        } => run_convert(&config, http_client(&config)?, url, text, file, out, preview).await,
     }
 }
 
@@ -101,25 +133,36 @@ async fn run_voices(config: &Config, http: reqwest::Client) -> anyhow::Result<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_convert(
     config: &Config,
     http: reqwest::Client,
     url: Option<String>,
     text: Option<String>,
+    file: Option<String>,
     out: Option<String>,
+    preview: bool,
 ) -> anyhow::Result<()> {
-    let source = match (url, text) {
-        (Some(url), _) => Source::Url(url),
-        (None, Some(text)) => Source::Text(text),
-        (None, None) => bail!("provide --url <URL> or --text <TEXT>"),
-    };
+    let source = resolve_source(url, text, file)?;
 
-    let format = config.audio_format()?;
+    let extractor = RoutingExtractor::new(http.clone());
+    let normalizer = RuleNormalizer::new()?;
+
+    // Dry run: show what would be spoken, no API call, no cost.
+    if preview {
+        let p = audify_pipeline::preview(&source, &extractor, &normalizer)
+            .await
+            .context("previewing")?;
+        println!(
+            "Title: {:?}\nInput chars: {}\nChunks: {}\n--- speakable text ---\n{}",
+            p.title, p.char_count, p.chunks, p.text
+        );
+        return Ok(());
+    }
+
     let voice_id = config.require_voice_id()?;
     let key = out.unwrap_or_else(|| source_key(&source));
 
-    let extractor = ArticleExtractor::new(http.clone());
-    let normalizer = RuleNormalizer::new()?;
     let synthesizer = VoxtralSynthesizer::new(
         http,
         &config.mistral_base_url,
@@ -129,17 +172,9 @@ async fn run_convert(
     );
     let storage = LocalStorage::new(&config.output_dir);
 
-    let output = process(
-        &source,
-        &extractor,
-        &normalizer,
-        &synthesizer,
-        &storage,
-        format,
-        &key,
-    )
-    .await
-    .context("running pipeline")?;
+    let output = process(&source, &extractor, &normalizer, &synthesizer, &storage, &key)
+        .await
+        .context("running pipeline")?;
 
     tracing::info!(
         path = %output.path,
@@ -151,11 +186,94 @@ async fn run_convert(
     Ok(())
 }
 
+async fn run_submit(
+    config: &Config,
+    http: reqwest::Client,
+    url: Option<String>,
+    text: Option<String>,
+    file: Option<String>,
+) -> anyhow::Result<()> {
+    let source = resolve_source(url, text, file)?;
+    let database_url = config.require_database_url()?;
+    let voice_id = config.require_voice_id()?.to_string();
+
+    // Extraction happens here (fast, and the natural dedup point); the expensive
+    // TTS work is deferred to the worker.
+    let extractor = RoutingExtractor::new(http);
+    let document = extractor.extract(&source).await.context("extracting")?;
+    if document.is_empty() {
+        bail!("no content extracted from source");
+    }
+    let char_count = i32::try_from(document.char_count()).unwrap_or(i32::MAX);
+    let struct_json = serde_json::to_value(&document).context("serializing document")?;
+    let content_hash = sha256_hex(&struct_json.to_string());
+    let (source_type, source_ref) = source_descriptor(&source);
+
+    let pool = audify_db::connect(database_url)
+        .await
+        .context("connecting to database")?;
+    let documents = audify_db::DocumentRepository::new(pool.clone());
+    let episodes = audify_db::EpisodeRepository::new(pool.clone());
+    let queue = audify_db::DbQueue::new(pool);
+
+    let doc = documents
+        .upsert(
+            &source_type,
+            &source_ref,
+            &content_hash,
+            document.title.as_deref(),
+            &struct_json,
+        )
+        .await?;
+    let est_cost = char_count as f64 / 1000.0 * 0.016;
+    let episode = episodes.create(doc.id, &voice_id, char_count, est_cost).await?;
+    let job_id = queue.enqueue(episode.id).await?;
+
+    tracing::info!(episode_id = %episode.id, %job_id, char_count, "submitted");
+    println!(
+        "Submitted episode {} (job {}) — {char_count} chars, est ${est_cost:.4}. Run `audify worker` to process.",
+        episode.id, job_id
+    );
+    Ok(())
+}
+
+/// Resolve mutually exclusive source flags into a [`Source`].
+fn resolve_source(
+    url: Option<String>,
+    text: Option<String>,
+    file: Option<String>,
+) -> anyhow::Result<Source> {
+    match (url, text, file) {
+        (Some(url), _, _) => Ok(Source::Url(url)),
+        (_, Some(text), _) => Ok(Source::Text(text)),
+        (_, _, Some(file)) => Ok(Source::File(PathBuf::from(file))),
+        _ => bail!("provide --url <URL>, --text <TEXT>, or --file <PDF>"),
+    }
+}
+
+/// Persisted source-type tag and a human-readable reference.
+fn source_descriptor(source: &Source) -> (String, String) {
+    match source {
+        Source::Url(u) => ("url".into(), u.clone()),
+        Source::Text(t) => ("text".into(), t.chars().take(120).collect()),
+        Source::File(p) => ("file".into(), p.to_string_lossy().into_owned()),
+    }
+}
+
+/// Full hex SHA-256 of a string.
+fn sha256_hex(s: &str) -> String {
+    Sha256::digest(s.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Stable storage key derived from the source content (first 16 hex of SHA-256).
 fn source_key(source: &Source) -> String {
     let material = match source {
-        Source::Url(u) => u.as_str(),
-        Source::Text(t) => t.as_str(),
+        Source::Url(u) => u.clone(),
+        Source::Text(t) => t.clone(),
+        Source::File(p) => p.to_string_lossy().into_owned(),
     };
     let digest = Sha256::digest(material.as_bytes());
     digest

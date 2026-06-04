@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE processing_jobs SET state = $2, locked_until = NULL, updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6be846c3d8662df6cbdf362d691c49fb9db1a79bc8dc0b3036e4f65cd943d38a"
+}

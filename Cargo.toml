@@ -16,6 +16,8 @@ audify-db = { path = "crates/db" }
 # Async runtime + traits
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+futures = "0.3"
+tempfile = "3"
 
 # Errors
 thiserror = "2"
@@ -33,6 +35,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Extraction / text
 scraper = "0.20"
 regex = "1"
+pdf-extract = "0.7"
 
 # Hashing / encoding
 sha2 = "0.10"

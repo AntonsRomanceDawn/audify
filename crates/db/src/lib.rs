@@ -12,7 +12,10 @@ use sqlx::PgPool;
 
 use audify_core::{Error, Result};
 
-pub use repo::{DocumentRepository, DocumentRow, EpisodeRepository, EpisodeRow};
+pub use repo::{
+    ChunkRepository, ChunkRow, DbQueue, DocumentRepository, DocumentRow, EpisodeRepository,
+    EpisodeRow, JobRepository,
+};
 
 /// Connect to Postgres and return a pooled handle.
 pub async fn connect(database_url: &str) -> Result<PgPool> {

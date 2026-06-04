@@ -5,9 +5,10 @@
 //! struct and a one-line wiring change — nothing more.
 
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use crate::error::Result;
-use crate::types::{Audio, AudioFormat, Document, Source};
+use crate::types::{Audio, AudioFormat, Document, JobState, Source};
 
 /// Turns a [`Source`] into a structured [`Document`].
 #[async_trait]
@@ -35,4 +36,33 @@ pub trait Synthesizer: Send + Sync {
 #[async_trait]
 pub trait Storage: Send + Sync {
     async fn store(&self, key: &str, bytes: &[u8]) -> Result<String>;
+}
+
+/// A job claimed from the queue for processing.
+#[derive(Debug, Clone)]
+pub struct ClaimedJob {
+    pub job_id: Uuid,
+    pub episode_id: Uuid,
+    pub attempts: i32,
+}
+
+/// The work queue. Phase 2 backs this with the database (durable, restart-safe);
+/// Phase 4 can swap in Redis behind the same trait without touching callers.
+#[async_trait]
+pub trait Queue: Send + Sync {
+    /// Enqueue processing for an episode; returns the new job id.
+    async fn enqueue(&self, episode_id: Uuid) -> Result<Uuid>;
+
+    /// Claim the next runnable job (pending, or lease-expired and reclaimable),
+    /// leasing it for `lease_secs`. Returns `None` if nothing is available.
+    async fn claim(&self, lease_secs: i64) -> Result<Option<ClaimedJob>>;
+
+    /// Record a job's current state for progress visibility.
+    async fn set_state(&self, job_id: Uuid, state: JobState) -> Result<()>;
+
+    /// Mark a job finished successfully.
+    async fn complete(&self, job_id: Uuid) -> Result<()>;
+
+    /// Mark a job failed with an error message.
+    async fn fail(&self, job_id: Uuid, error: &str) -> Result<()>;
 }

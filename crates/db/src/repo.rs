@@ -8,11 +8,12 @@
 //! Note on the `as "col!"` annotations: Postgres reports every column of an
 //! `INSERT ... RETURNING` as nullable, so non-null columns are forced with `!`.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use audify_core::{EpisodeStatus, Error, Result};
+use audify_core::{ClaimedJob, EpisodeStatus, Error, JobState, Queue, Result};
 
 /// A row from the `documents` table.
 #[derive(Debug, Clone)]
@@ -86,6 +87,21 @@ impl DocumentRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| Error::Database(format!("find document by hash: {e}")))
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<Option<DocumentRow>> {
+        sqlx::query_as!(
+            DocumentRow,
+            r#"
+            SELECT id, source_type, source_ref, content_hash, title,
+                   struct_json AS "struct_json!: serde_json::Value", created_at
+            FROM documents WHERE id = $1
+            "#,
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("get document: {e}")))
     }
 }
 
@@ -214,5 +230,204 @@ impl EpisodeRepository {
         .await
         .map_err(|e| Error::Database(format!("set episode ready: {e}")))?;
         Ok(())
+    }
+}
+
+/// A row from the `chunks` table.
+#[derive(Debug, Clone)]
+pub struct ChunkRow {
+    pub id: Uuid,
+    pub episode_id: Uuid,
+    pub idx: i32,
+    pub text: String,
+    pub audio_path: Option<String>,
+    pub status: String,
+}
+
+/// Persists per-section chunks and their rendered audio (for resume-on-retry).
+#[derive(Clone)]
+pub struct ChunkRepository {
+    pool: PgPool,
+}
+
+impl ChunkRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Create the chunk for `(episode, idx)`, or return/refresh the existing one.
+    pub async fn upsert(&self, episode_id: Uuid, idx: i32, text: &str) -> Result<ChunkRow> {
+        sqlx::query_as!(
+            ChunkRow,
+            r#"
+            INSERT INTO chunks (episode_id, idx, text)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (episode_id, idx) DO UPDATE SET text = EXCLUDED.text
+            RETURNING
+                id AS "id!", episode_id AS "episode_id!", idx AS "idx!",
+                text AS "text!", audio_path, status AS "status!"
+            "#,
+            episode_id,
+            idx,
+            text,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("upsert chunk: {e}")))
+    }
+
+    pub async fn list_by_episode(&self, episode_id: Uuid) -> Result<Vec<ChunkRow>> {
+        sqlx::query_as!(
+            ChunkRow,
+            "SELECT id, episode_id, idx, text, audio_path, status
+             FROM chunks WHERE episode_id = $1 ORDER BY idx",
+            episode_id,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("list chunks: {e}")))
+    }
+
+    /// Record a chunk's rendered audio path (the per-chunk cache key for resume).
+    pub async fn set_audio(&self, id: Uuid, audio_path: &str) -> Result<()> {
+        sqlx::query!(
+            "UPDATE chunks SET audio_path = $2, status = 'ready' WHERE id = $1",
+            id,
+            audio_path,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("set chunk audio: {e}")))?;
+        Ok(())
+    }
+}
+
+/// Persists processing jobs and implements lease-based claiming.
+#[derive(Clone)]
+pub struct JobRepository {
+    pool: PgPool,
+}
+
+impl JobRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create(&self, episode_id: Uuid) -> Result<Uuid> {
+        sqlx::query_scalar!(
+            r#"INSERT INTO processing_jobs (episode_id, state) VALUES ($1, $2) RETURNING id AS "id!""#,
+            episode_id,
+            JobState::Pending.as_str(),
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("create job: {e}")))
+    }
+
+    /// Atomically claim the next runnable job and lease it. Picks a `pending`
+    /// job, or one whose lease has expired (reaping a dead worker's job).
+    /// `FOR UPDATE SKIP LOCKED` makes this safe with multiple workers.
+    pub async fn claim(&self, lease_secs: i64) -> Result<Option<ClaimedJob>> {
+        let lease = lease_secs as f64;
+        sqlx::query_as!(
+            ClaimedJob,
+            r#"
+            UPDATE processing_jobs
+            SET state = $2,
+                locked_until = now() + make_interval(secs => $1),
+                attempts = attempts + 1,
+                updated_at = now()
+            WHERE id = (
+                SELECT id FROM processing_jobs
+                WHERE state = 'pending'
+                   OR (state NOT IN ('ready', 'failed')
+                       AND locked_until IS NOT NULL AND locked_until < now())
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            RETURNING id AS "job_id!", episode_id AS "episode_id!", attempts AS "attempts!"
+            "#,
+            lease,
+            JobState::Normalizing.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("claim job: {e}")))
+    }
+
+    pub async fn set_state(&self, id: Uuid, state: JobState) -> Result<()> {
+        sqlx::query!(
+            "UPDATE processing_jobs SET state = $2, updated_at = now() WHERE id = $1",
+            id,
+            state.as_str(),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("set job state: {e}")))?;
+        Ok(())
+    }
+
+    pub async fn complete(&self, id: Uuid) -> Result<()> {
+        sqlx::query!(
+            "UPDATE processing_jobs SET state = $2, locked_until = NULL, updated_at = now() WHERE id = $1",
+            id,
+            JobState::Ready.as_str(),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("complete job: {e}")))?;
+        Ok(())
+    }
+
+    pub async fn fail(&self, id: Uuid, error: &str) -> Result<()> {
+        sqlx::query!(
+            "UPDATE processing_jobs SET state = $2, last_error = $3, locked_until = NULL, updated_at = now() WHERE id = $1",
+            id,
+            JobState::Failed.as_str(),
+            error,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("fail job: {e}")))?;
+        Ok(())
+    }
+}
+
+/// Database-backed [`Queue`]: durable and restart-safe. The job table *is* the
+/// queue; claiming uses row leases. Swappable for Redis in Phase 4.
+#[derive(Clone)]
+pub struct DbQueue {
+    jobs: JobRepository,
+}
+
+impl DbQueue {
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            jobs: JobRepository::new(pool),
+        }
+    }
+}
+
+#[async_trait]
+impl Queue for DbQueue {
+    async fn enqueue(&self, episode_id: Uuid) -> Result<Uuid> {
+        self.jobs.create(episode_id).await
+    }
+
+    async fn claim(&self, lease_secs: i64) -> Result<Option<ClaimedJob>> {
+        self.jobs.claim(lease_secs).await
+    }
+
+    async fn set_state(&self, job_id: Uuid, state: JobState) -> Result<()> {
+        self.jobs.set_state(job_id, state).await
+    }
+
+    async fn complete(&self, job_id: Uuid) -> Result<()> {
+        self.jobs.complete(job_id).await
+    }
+
+    async fn fail(&self, job_id: Uuid, error: &str) -> Result<()> {
+        self.jobs.fail(job_id, error).await
     }
 }

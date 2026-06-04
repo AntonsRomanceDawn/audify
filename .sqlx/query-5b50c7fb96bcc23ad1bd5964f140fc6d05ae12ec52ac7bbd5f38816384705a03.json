@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, episode_id, idx, text, audio_path, status\n             FROM chunks WHERE episode_id = $1 ORDER BY idx",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "episode_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "idx",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "audio_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "5b50c7fb96bcc23ad1bd5964f140fc6d05ae12ec52ac7bbd5f38816384705a03"
+}

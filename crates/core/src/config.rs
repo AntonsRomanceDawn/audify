@@ -4,7 +4,6 @@
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::types::AudioFormat;
 
 /// Application configuration. All fields are populated from environment
 /// variables prefixed with `AUDIFY_` (e.g. `AUDIFY_MISTRAL_API_KEY`).
@@ -26,10 +25,6 @@ pub struct Config {
     #[serde(default)]
     pub voice_id: Option<String>,
 
-    /// Requested output format: mp3 | wav | pcm | flac | opus.
-    #[serde(default = "defaults::response_format")]
-    pub response_format: String,
-
     /// Directory rendered audio is written to.
     #[serde(default = "defaults::output_dir")]
     pub output_dir: String,
@@ -50,9 +45,6 @@ mod defaults {
     }
     pub fn tts_model() -> String {
         "voxtral-mini-tts-2603".to_string()
-    }
-    pub fn response_format() -> String {
-        "mp3".to_string()
     }
     pub fn output_dir() -> String {
         "./output".to_string()
@@ -81,11 +73,6 @@ impl Config {
 
         cfg.validate()?;
         Ok(cfg)
-    }
-
-    /// The parsed, validated audio format.
-    pub fn audio_format(&self) -> Result<AudioFormat> {
-        self.response_format.parse()
     }
 
     /// The configured database URL, or a helpful error if none is set.
@@ -122,8 +109,6 @@ impl Config {
                 "AUDIFY_HTTP_TIMEOUT_SECS must be greater than 0".into(),
             ));
         }
-        // Surfaces a bad format string at startup rather than mid-pipeline.
-        let _ = self.audio_format()?;
         Ok(())
     }
 }

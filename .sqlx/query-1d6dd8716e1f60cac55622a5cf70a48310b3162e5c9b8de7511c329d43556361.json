@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO chunks (episode_id, idx, text)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (episode_id, idx) DO UPDATE SET text = EXCLUDED.text\n            RETURNING\n                id AS \"id!\", episode_id AS \"episode_id!\", idx AS \"idx!\",\n                text AS \"text!\", audio_path, status AS \"status!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "episode_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "idx!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "text!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "audio_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "status!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1d6dd8716e1f60cac55622a5cf70a48310b3162e5c9b8de7511c329d43556361"
+}

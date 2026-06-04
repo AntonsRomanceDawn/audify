@@ -11,7 +11,7 @@ pub mod types;
 
 pub use config::Config;
 pub use error::{Error, Result};
-pub use traits::{Extractor, Normalizer, Storage, Synthesizer};
+pub use traits::{ClaimedJob, Extractor, Normalizer, Queue, Storage, Synthesizer};
 pub use types::{
     Audio, AudioFormat, Document, EpisodeStatus, JobState, Section, Source,
 };

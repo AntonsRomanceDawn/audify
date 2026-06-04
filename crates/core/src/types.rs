@@ -1,5 +1,7 @@
 //! Domain types shared across the pipeline.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// What the user asked us to turn into audio.
@@ -9,6 +11,8 @@ pub enum Source {
     Url(String),
     /// Raw text supplied directly (already an "article").
     Text(String),
+    /// A local file (currently PDF).
+    File(PathBuf),
 }
 
 /// A document extracted into clean structure, before normalization.

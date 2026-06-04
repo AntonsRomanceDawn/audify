@@ -51,6 +51,9 @@ impl Extractor for ArticleExtractor {
                 // never held across a suspension and the future stays `Send`.
                 parse_html(&body)
             }
+            Source::File(_) => Err(Error::InvalidSource(
+                "ArticleExtractor does not handle files".into(),
+            )),
         }
     }
 }
