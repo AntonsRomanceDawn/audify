@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/pipeline", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+audify-core = { path = "crates/core" }
+audify-pipeline = { path = "crates/pipeline" }
+
+# Async runtime + traits
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Serde / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+config = { version = "0.15", default-features = false, features = ["convert-case"] }
+dotenvy = "0.15"
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Extraction / text
+scraper = "0.20"
+regex = "1"
+
+# Hashing / encoding
+sha2 = "0.10"
+base64 = "0.22"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.release]
+strip = true
+lto = "thin"

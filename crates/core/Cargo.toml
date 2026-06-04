@@ -1,0 +1,12 @@
+[package]
+name = "audify-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+config = { workspace = true }
+tracing = { workspace = true }
