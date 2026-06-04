@@ -31,6 +31,9 @@ dotenvy = "0.15"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace", "timeout", "compression-gzip", "request-id", "util"] }
 
 # Extraction / text
 scraper = "0.20"

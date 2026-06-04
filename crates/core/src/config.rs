@@ -33,6 +33,14 @@ pub struct Config {
     #[serde(default = "defaults::http_timeout_secs")]
     pub http_timeout_secs: u64,
 
+    /// Address the HTTP server binds to.
+    #[serde(default = "defaults::bind_addr")]
+    pub bind_addr: String,
+
+    /// Public base URL used to build absolute links in the RSS feed / API.
+    #[serde(default = "defaults::public_base_url")]
+    pub public_base_url: String,
+
     /// Postgres connection string, read from `DATABASE_URL` (set in `load`).
     /// Optional so non-DB commands work without it.
     #[serde(skip)]
@@ -51,6 +59,12 @@ mod defaults {
     }
     pub fn http_timeout_secs() -> u64 {
         120
+    }
+    pub fn bind_addr() -> String {
+        "127.0.0.1:8080".to_string()
+    }
+    pub fn public_base_url() -> String {
+        "http://localhost:8080".to_string()
     }
 }
 

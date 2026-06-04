@@ -1,0 +1,307 @@
+//! HTTP API (Axum). Handlers stay thin — they call repositories/services and
+//! map to responses; no business logic lives here.
+
+use std::path::Path as FsPath;
+use std::time::Duration;
+
+use anyhow::Context;
+use axum::{
+    extract::{Path, Query, Request, State},
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use tower::{ServiceBuilder, ServiceExt};
+use tower_http::{
+    compression::CompressionLayer,
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    services::ServeFile,
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
+};
+use uuid::Uuid;
+
+use audify_core::{Config, Source};
+use audify_db::{DbQueue, DocumentRepository, EpisodeRepository, EpisodeRow, FeedRow};
+use audify_pipeline::extract::RoutingExtractor;
+
+use crate::service;
+
+/// Shared state handed to every handler.
+#[derive(Clone)]
+struct AppState {
+    documents: DocumentRepository,
+    episodes: EpisodeRepository,
+    queue: DbQueue,
+    http: reqwest::Client,
+    voice_id: String,
+    output_dir: String,
+    public_base_url: String,
+}
+
+/// Build the server from config and serve until shutdown.
+pub async fn serve(config: &Config, http: reqwest::Client) -> anyhow::Result<()> {
+    let database_url = config.require_database_url()?;
+    let voice_id = config.require_voice_id()?.to_string();
+    let pool = audify_db::connect(database_url)
+        .await
+        .context("connecting to database")?;
+
+    let state = AppState {
+        documents: DocumentRepository::new(pool.clone()),
+        episodes: EpisodeRepository::new(pool.clone()),
+        queue: DbQueue::new(pool),
+        http,
+        voice_id,
+        output_dir: config.output_dir.clone(),
+        public_base_url: config.public_base_url.trim_end_matches('/').to_string(),
+    };
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind(&config.bind_addr)
+        .await
+        .with_context(|| format!("binding {}", config.bind_addr))?;
+    tracing::info!(addr = %config.bind_addr, "listening");
+    axum::serve(listener, app).await.context("server error")?;
+    Ok(())
+}
+
+fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/feed.xml", get(feed))
+        .route("/api/articles", post(create_article))
+        .route("/api/episodes", get(list_episodes))
+        .route("/api/episodes/{id}", get(get_episode))
+        .route("/api/episodes/{id}/stream", get(stream_episode))
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+                .layer(TraceLayer::new_for_http())
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    Duration::from_secs(30),
+                ))
+                .layer(CompressionLayer::new())
+                .layer(PropagateRequestIdLayer::x_request_id()),
+        )
+}
+
+async fn health() -> &'static str {
+    "ok"
+}
+
+// ---- episodes ----
+
+#[derive(Deserialize)]
+struct Pagination {
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+async fn list_episodes(
+    State(state): State<AppState>,
+    Query(page): Query<Pagination>,
+) -> Result<Json<Vec<EpisodeDto>>, ApiError> {
+    let rows = state
+        .episodes
+        .list(page.limit.clamp(1, 200), page.offset.max(0))
+        .await?;
+    let dtos = rows
+        .into_iter()
+        .map(|r| EpisodeDto::from_row(r, &state.public_base_url))
+        .collect();
+    Ok(Json(dtos))
+}
+
+async fn get_episode(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<EpisodeDto>, ApiError> {
+    let row = state.episodes.get(id).await?.ok_or(ApiError::NotFound)?;
+    Ok(Json(EpisodeDto::from_row(row, &state.public_base_url)))
+}
+
+/// Serve the rendered MP3 with byte-range support (handled by `ServeFile`).
+async fn stream_episode(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    let episode = state.episodes.get(id).await?.ok_or(ApiError::NotFound)?;
+    if episode.audio_path.is_none() {
+        return Err(ApiError::NotFound); // not rendered yet
+    }
+    // Resolve from the output dir + id, avoiding the OS-specific stored path.
+    let path = FsPath::new(&state.output_dir).join(format!("{id}.mp3"));
+    Ok(ServeFile::new(path).oneshot(request).await.into_response())
+}
+
+// ---- submit ----
+
+#[derive(Deserialize)]
+struct CreateArticle {
+    url: Option<String>,
+    text: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SubmitDto {
+    episode_id: Uuid,
+    job_id: Uuid,
+}
+
+async fn create_article(
+    State(state): State<AppState>,
+    Json(req): Json<CreateArticle>,
+) -> Result<(StatusCode, Json<SubmitDto>), ApiError> {
+    let source = match (req.url, req.text) {
+        (Some(url), _) => Source::Url(url),
+        (_, Some(text)) => Source::Text(text),
+        _ => return Err(ApiError::BadRequest("provide 'url' or 'text'".into())),
+    };
+    let extractor = RoutingExtractor::new(state.http.clone());
+    let r = service::submit(
+        &source,
+        &extractor,
+        &state.documents,
+        &state.episodes,
+        &state.queue,
+        &state.voice_id,
+    )
+    .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SubmitDto {
+            episode_id: r.episode_id,
+            job_id: r.job_id,
+        }),
+    ))
+}
+
+// ---- RSS feed ----
+
+async fn feed(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let rows = state.episodes.list_ready_for_feed(200).await?;
+    let xml = build_rss(&rows, &state.public_base_url, &state.output_dir);
+    Ok((
+        [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+        xml,
+    )
+        .into_response())
+}
+
+fn build_rss(rows: &[FeedRow], base_url: &str, output_dir: &str) -> String {
+    let mut items = String::new();
+    for r in rows {
+        let title = xml_escape(r.title.as_deref().unwrap_or("Untitled"));
+        let length = std::fs::metadata(FsPath::new(output_dir).join(format!("{}.mp3", r.id)))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let pub_date = r.created_at.to_rfc2822();
+        let duration = r.duration_sec.unwrap_or(0);
+        items.push_str(&format!(
+            "  <item>\n    \
+             <title>{title}</title>\n    \
+             <guid isPermaLink=\"false\">{id}</guid>\n    \
+             <pubDate>{pub_date}</pubDate>\n    \
+             <enclosure url=\"{base_url}/api/episodes/{id}/stream\" length=\"{length}\" type=\"audio/mpeg\"/>\n    \
+             <itunes:duration>{duration}</itunes:duration>\n  \
+             </item>\n",
+            id = r.id,
+        ));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <rss version=\"2.0\" xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\">\n\
+         <channel>\n  \
+         <title>Audify</title>\n  \
+         <link>{base_url}</link>\n  \
+         <description>Your articles, read aloud.</description>\n  \
+         <language>en</language>\n\
+         {items}</channel>\n</rss>\n"
+    )
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+// ---- shared DTO + errors ----
+
+/// Client-facing episode shape.
+#[derive(Serialize)]
+struct EpisodeDto {
+    id: Uuid,
+    status: String,
+    voice_id: String,
+    char_count: i32,
+    duration_sec: Option<i32>,
+    created_at: String,
+    /// Present once the audio is ready.
+    stream_url: Option<String>,
+}
+
+impl EpisodeDto {
+    fn from_row(row: EpisodeRow, base_url: &str) -> Self {
+        let stream_url = row
+            .audio_path
+            .as_ref()
+            .map(|_| format!("{base_url}/api/episodes/{}/stream", row.id));
+        Self {
+            id: row.id,
+            status: row.status,
+            voice_id: row.voice_id,
+            char_count: row.char_count,
+            duration_sec: row.duration_sec,
+            created_at: row.created_at.to_rfc3339(),
+            stream_url,
+        }
+    }
+}
+
+/// API error mapped to an HTTP response.
+enum ApiError {
+    NotFound,
+    BadRequest(String),
+    Internal(anyhow::Error),
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::Internal(e) => {
+                tracing::error!(error = %e, "request failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
+        };
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        ApiError::Internal(e)
+    }
+}
+
+impl From<audify_core::Error> for ApiError {
+    fn from(e: audify_core::Error) -> Self {
+        ApiError::Internal(e.into())
+    }
+}

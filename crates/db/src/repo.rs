@@ -127,6 +127,15 @@ impl EpisodeRow {
     }
 }
 
+/// A ready episode with its document title, for building the RSS feed.
+#[derive(Debug, Clone)]
+pub struct FeedRow {
+    pub id: Uuid,
+    pub title: Option<String>,
+    pub duration_sec: Option<i32>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Persists episodes and their lifecycle.
 #[derive(Clone)]
 pub struct EpisodeRepository {
@@ -215,6 +224,24 @@ impl EpisodeRepository {
         .await
         .map_err(|e| Error::Database(format!("set episode status: {e}")))?;
         Ok(())
+    }
+
+    /// Ready episodes joined with their document title, for the RSS feed.
+    pub async fn list_ready_for_feed(&self, limit: i64) -> Result<Vec<FeedRow>> {
+        sqlx::query_as!(
+            FeedRow,
+            r#"
+            SELECT e.id AS "id!", d.title, e.duration_sec, e.created_at AS "created_at!"
+            FROM episodes e JOIN documents d ON d.id = e.document_id
+            WHERE e.status = 'ready'
+            ORDER BY e.created_at DESC
+            LIMIT $1
+            "#,
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Database(format!("feed query: {e}")))
     }
 
     /// Mark an episode ready with its final audio path and duration.

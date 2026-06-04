@@ -14,7 +14,7 @@ use audify_core::{Error, Result};
 
 pub use repo::{
     ChunkRepository, ChunkRow, DbQueue, DocumentRepository, DocumentRow, EpisodeRepository,
-    EpisodeRow, JobRepository,
+    EpisodeRow, FeedRow, JobRepository,
 };
 
 /// Connect to Postgres and return a pooled handle.

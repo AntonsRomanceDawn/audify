@@ -4,6 +4,8 @@
 //! writes an audio file. `audify voices` lists the preset voice ids your account
 //! can use (and confirms the API key + endpoint work).
 
+mod api;
+mod service;
 mod worker;
 
 use std::path::PathBuf;
@@ -14,7 +16,7 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use tracing_subscriber::EnvFilter;
 
-use audify_core::{Config, Extractor, Queue, Source};
+use audify_core::{Config, Source};
 use audify_pipeline::{
     extract::RoutingExtractor, normalize::RuleNormalizer, process, storage::LocalStorage,
     synth::VoxtralSynthesizer,
@@ -63,6 +65,8 @@ enum Command {
         #[arg(long)]
         once: bool,
     },
+    /// Run the HTTP API server (episodes, audio, RSS feed).
+    Serve,
     /// List the preset voice ids available to your account.
     Voices,
     /// Apply database migrations.
@@ -83,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
             run_submit(&config, http_client(&config)?, url, text, file).await
         }
         Command::Worker { once } => worker::run(&config, http_client(&config)?, once).await,
+        Command::Serve => api::serve(&config, http_client(&config)?).await,
         Command::Voices => run_voices(&config, http_client(&config)?).await,
         Command::Convert {
             url,
@@ -197,42 +202,20 @@ async fn run_submit(
     let database_url = config.require_database_url()?;
     let voice_id = config.require_voice_id()?.to_string();
 
-    // Extraction happens here (fast, and the natural dedup point); the expensive
-    // TTS work is deferred to the worker.
-    let extractor = RoutingExtractor::new(http);
-    let document = extractor.extract(&source).await.context("extracting")?;
-    if document.is_empty() {
-        bail!("no content extracted from source");
-    }
-    let char_count = i32::try_from(document.char_count()).unwrap_or(i32::MAX);
-    let struct_json = serde_json::to_value(&document).context("serializing document")?;
-    let content_hash = sha256_hex(&struct_json.to_string());
-    let (source_type, source_ref) = source_descriptor(&source);
-
     let pool = audify_db::connect(database_url)
         .await
         .context("connecting to database")?;
     let documents = audify_db::DocumentRepository::new(pool.clone());
     let episodes = audify_db::EpisodeRepository::new(pool.clone());
     let queue = audify_db::DbQueue::new(pool);
+    let extractor = RoutingExtractor::new(http);
 
-    let doc = documents
-        .upsert(
-            &source_type,
-            &source_ref,
-            &content_hash,
-            document.title.as_deref(),
-            &struct_json,
-        )
-        .await?;
-    let est_cost = char_count as f64 / 1000.0 * 0.016;
-    let episode = episodes.create(doc.id, &voice_id, char_count, est_cost).await?;
-    let job_id = queue.enqueue(episode.id).await?;
+    let r = service::submit(&source, &extractor, &documents, &episodes, &queue, &voice_id).await?;
 
-    tracing::info!(episode_id = %episode.id, %job_id, char_count, "submitted");
+    tracing::info!(episode_id = %r.episode_id, job_id = %r.job_id, char_count = r.char_count, "submitted");
     println!(
-        "Submitted episode {} (job {}) — {char_count} chars, est ${est_cost:.4}. Run `audify worker` to process.",
-        episode.id, job_id
+        "Submitted episode {} (job {}) — {} chars, est ${:.4}. Run `audify worker` to process.",
+        r.episode_id, r.job_id, r.char_count, r.est_cost
     );
     Ok(())
 }
@@ -249,23 +232,6 @@ fn resolve_source(
         (_, _, Some(file)) => Ok(Source::File(PathBuf::from(file))),
         _ => bail!("provide --url <URL>, --text <TEXT>, or --file <PDF>"),
     }
-}
-
-/// Persisted source-type tag and a human-readable reference.
-fn source_descriptor(source: &Source) -> (String, String) {
-    match source {
-        Source::Url(u) => ("url".into(), u.clone()),
-        Source::Text(t) => ("text".into(), t.chars().take(120).collect()),
-        Source::File(p) => ("file".into(), p.to_string_lossy().into_owned()),
-    }
-}
-
-/// Full hex SHA-256 of a string.
-fn sha256_hex(s: &str) -> String {
-    Sha256::digest(s.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 /// Stable storage key derived from the source content (first 16 hex of SHA-256).
