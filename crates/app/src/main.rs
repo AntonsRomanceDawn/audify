@@ -124,7 +124,7 @@ async fn run_voices(config: &Config, http: reqwest::Client) -> anyhow::Result<()
     let synth = VoxtralSynthesizer::new(
         http,
         &config.mistral_base_url,
-        &config.mistral_api_key,
+        config.require_mistral_api_key()?,
         &config.tts_model,
         "",
     );
@@ -171,7 +171,7 @@ async fn run_convert(
     let synthesizer = VoxtralSynthesizer::new(
         http,
         &config.mistral_base_url,
-        &config.mistral_api_key,
+        config.require_mistral_api_key()?,
         &config.tts_model,
         voice_id,
     );

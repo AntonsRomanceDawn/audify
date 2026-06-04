@@ -28,6 +28,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 pub async fn run(config: &Config, http: reqwest::Client, once: bool) -> anyhow::Result<()> {
     let database_url = config.require_database_url()?;
     let voice_id = config.require_voice_id()?;
+    let mistral_api_key = config.require_mistral_api_key()?;
     let pool = audify_db::connect(database_url)
         .await
         .context("connecting to database")?;
@@ -41,7 +42,7 @@ pub async fn run(config: &Config, http: reqwest::Client, once: bool) -> anyhow::
         synthesizer: VoxtralSynthesizer::new(
             http,
             &config.mistral_base_url,
-            &config.mistral_api_key,
+            mistral_api_key,
             &config.tts_model,
             voice_id,
         ),

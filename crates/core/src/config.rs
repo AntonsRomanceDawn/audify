@@ -9,8 +9,10 @@ use crate::error::{Error, Result};
 /// variables prefixed with `AUDIFY_` (e.g. `AUDIFY_MISTRAL_API_KEY`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Mistral API key for Voxtral TTS.
-    pub mistral_api_key: String,
+    /// Mistral API key for Voxtral TTS. Optional so commands that don't
+    /// synthesize (migrate, serve) run without it.
+    #[serde(default)]
+    pub mistral_api_key: Option<String>,
 
     /// Base URL of the Mistral API.
     #[serde(default = "defaults::base_url")]
@@ -95,6 +97,14 @@ impl Config {
         Ok(cfg)
     }
 
+    /// The configured Mistral API key, or a helpful error if none is set.
+    pub fn require_mistral_api_key(&self) -> Result<&str> {
+        match self.mistral_api_key.as_deref().map(str::trim) {
+            Some(v) if !v.is_empty() => Ok(v),
+            _ => Err(Error::Config("AUDIFY_MISTRAL_API_KEY is not set".into())),
+        }
+    }
+
     /// The configured database URL, or a helpful error if none is set.
     pub fn require_database_url(&self) -> Result<&str> {
         match self.database_url.as_deref().map(str::trim) {
@@ -117,13 +127,8 @@ impl Config {
 
     /// Validate invariants that `serde` cannot express on its own.
     fn validate(&self) -> Result<()> {
-        if self.mistral_api_key.trim().is_empty() {
-            return Err(Error::Config(
-                "AUDIFY_MISTRAL_API_KEY must not be empty".into(),
-            ));
-        }
-        // voice_id is validated only when a command actually synthesizes audio,
-        // so `audify voices` works before one has been chosen.
+        // mistral_api_key, voice_id and database_url are required only by the
+        // commands that use them (via require_*), so migrate/serve run without them.
         if self.http_timeout_secs == 0 {
             return Err(Error::Config(
                 "AUDIFY_HTTP_TIMEOUT_SECS must be greater than 0".into(),
