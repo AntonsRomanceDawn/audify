@@ -9,7 +9,7 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -82,6 +82,7 @@ pub async fn serve(config: &Config, http: reqwest::Client) -> anyhow::Result<()>
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/", get(index))
         .route("/feed.xml", get(feed))
         .route("/api/articles", post(create_article))
         .route("/api/episodes", get(list_episodes))
@@ -107,15 +108,83 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// Minimal submit/listen page (behind the same Basic Auth as everything else).
+async fn index() -> Html<&'static str> {
+    Html(INDEX_HTML)
+}
+
+const INDEX_HTML: &str = r###"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audify</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; background:#111; color:#eee; }
+  h1 { font-weight: 600; } h2 { font-weight: 500; font-size: 18px; margin-top: 28px; }
+  input, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #333; }
+  input { width: 100%; background:#1c1c1c; color:#eee; box-sizing:border-box; }
+  button { background:#3a6df0; color:#fff; border:none; cursor:pointer; margin-top:8px; }
+  #msg { margin-top:12px; min-height:20px; color:#9fb4ff; }
+  ul { list-style:none; padding:0; }
+  li { padding:10px 0; border-bottom:1px solid #222; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .status { font-size:13px; color:#999; }
+  a { color:#9fb4ff; }
+  .feed { margin-top:24px; font-size:13px; color:#777; }
+</style>
+</head>
+<body>
+  <h1>Audify</h1>
+  <input id="src" placeholder="Paste an article URL (or raw text)…" autofocus>
+  <button id="add">Add to podcast</button>
+  <div id="msg"></div>
+  <h2>Episodes</h2>
+  <ul id="list"></ul>
+  <div class="feed">Subscribe in a podcast app: <code>/feed.xml</code></div>
+<script>
+const msg = document.getElementById('msg');
+async function add() {
+  const v = document.getElementById('src').value.trim();
+  if (!v) return;
+  const body = /^https?:\/\//i.test(v) ? { url: v } : { text: v };
+  msg.textContent = 'Submitting…';
+  try {
+    const r = await fetch('/api/articles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) { msg.textContent = 'Error: ' + r.status; return; }
+    const j = await r.json();
+    msg.textContent = 'Queued ' + j.episode_id.slice(0, 8) + ' — rendering…';
+    document.getElementById('src').value = '';
+    load();
+  } catch (e) { msg.textContent = 'Error: ' + e; }
+}
+async function load() {
+  try {
+    const r = await fetch('/api/episodes?limit=20');
+    if (!r.ok) return;
+    const eps = await r.json();
+    document.getElementById('list').innerHTML = eps.map(e =>
+      '<li><span class="status">' + e.status + (e.duration_sec ? ' &middot; ' + e.duration_sec + 's' : '') + '</span>' +
+      (e.stream_url ? '<a href="' + e.stream_url + '">&#9654; play</a>' : '<span class="status">&hellip;</span>') +
+      '</li>').join('') || '<li class="status">No episodes yet.</li>';
+  } catch (e) {}
+}
+document.getElementById('add').addEventListener('click', add);
+document.getElementById('src').addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>"###;
+
 /// Enforce HTTP Basic Auth on podcast-facing routes when credentials are set.
 async fn basic_auth(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let path = request.uri().path();
-    let is_protected =
-        path == "/feed.xml" || (path.starts_with("/api/episodes/") && path.ends_with("/stream"));
+    // Everything except the health check requires auth (when configured): the
+    // feed, audio, and the submit/list endpoints (so nobody can run up the bill).
+    let is_protected = request.uri().path() != "/health";
 
     if is_protected {
         if let Some((user, pass)) = &state.basic_auth {
